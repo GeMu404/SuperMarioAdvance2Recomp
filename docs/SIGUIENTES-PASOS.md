@@ -129,6 +129,6 @@ A vigilar: objeto que *aparece* ya fuera del rango sin ambigüedad (X ∉ [−57
 
 ### Diagnóstico: quién escribe cada slot del soft-OAM
 
-- `SMA2_OAM_LOG=1 build/run-sma2.sh` (apagado por defecto). F10 vuelca el cuadro recién armado a `logs/oam-<vblank>.txt` (raíz del repo, ignorado por git). También `SMA2_OAM_LOG_FRAME=<vblank>`.
+- `SMA2_OAM_LOG=1` (apagado por defecto). Disparadores: F10, `touch logs/dump` (se borra al volcar), `SMA2_OAM_LOG_EVERY=N` (anillo logs/oam-ring0..3.txt), `SMA2_OAM_LOG_FRAME=<vblank>`. Carpeta: `logs/` relativa al cwd (o `SMA2_OAM_LOG_DIR`); la ruta absoluta se imprime al iniciar.
 - Columnas: slot, PC que escribió attr0/attr1/attr2, attrs, Y, X 9 bits, tile, forma/tamaño, X del pliegue, X completa latcheada (si la ruta tiene hook; `-` si no).
 - `src/smw_oam_log.cpp` + observador de escrituras en gbarecomp (`g_runtime_write_observer` en `runtime_trace_event`, F10 en `host_window`).

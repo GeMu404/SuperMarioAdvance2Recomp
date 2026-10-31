@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <string>
 
 #include "runtime_arm.h"
 #include "runtime_bus_bridge.h"
@@ -26,13 +27,19 @@ struct SlotLog {
 SlotLog g_cur[128];
 unsigned long long g_frame = ~0ull;
 unsigned long long g_target = 0;
+unsigned long long g_every = 0;
+unsigned g_ring = 0;
+std::filesystem::path g_dir;
 bool g_in_write = false;
 
 void dump(unsigned long long frame) {
-    std::error_code ec;
-    std::filesystem::create_directories("logs", ec);
-    char name[64];
-    std::snprintf(name, sizeof name, "logs/oam-%llu.txt", frame);
+    char base[64];
+    if (g_every && !g_runtime_dump_request)
+        std::snprintf(base, sizeof base, "oam-ring%u.txt", g_ring++ % 4u);
+    else
+        std::snprintf(base, sizeof base, "oam-%llu.txt", frame);
+    const std::string path = (g_dir / base).string();
+    const char* name = path.c_str();
     std::FILE* f = std::fopen(name, "w");
     if (!f) return;
     std::fprintf(f, "# vblank %llu  view_w %d  slot pc_attr0 pc_attr1 pc_attr2 "
@@ -64,8 +71,14 @@ void on_write(std::uint32_t pc, std::uint32_t addr, std::uint32_t,
     const unsigned long long fr = g_runtime_vblank_starts;
     if (fr != g_frame) {
         // A new frame started: the previous one's soft OAM is complete.
+        bool touch = false;
+        if ((fr & 15u) == 0u) {
+            std::error_code ec;
+            touch = std::filesystem::remove(g_dir / "dump", ec);
+        }
         if (g_frame != ~0ull &&
-            (g_runtime_dump_request || (g_target && g_frame == g_target))) {
+            (touch || g_runtime_dump_request || (g_target && g_frame == g_target) ||
+             (g_every && g_frame % g_every == 0))) {
             g_runtime_dump_request = 0;
             g_in_write = true;
             dump(g_frame);
@@ -93,8 +106,16 @@ void install_oam_log() {
     const char* e = std::getenv("SMA2_OAM_LOG");
     if (!e || !*e || *e == '0') return;
     if (const char* t = std::getenv("SMA2_OAM_LOG_FRAME")) g_target = std::strtoull(t, nullptr, 10);
+    if (const char* n = std::getenv("SMA2_OAM_LOG_EVERY")) g_every = std::strtoull(n, nullptr, 10);
+    std::error_code ec;
+    const char* d = std::getenv("SMA2_OAM_LOG_DIR");
+    g_dir = std::filesystem::absolute(d && *d ? d : "logs", ec);
+    std::filesystem::create_directories(g_dir, ec);
     std::memset(g_cur, 0, sizeof g_cur);
     g_runtime_write_observer = on_write;
-    std::fprintf(stderr, "[smw:oam] log on: F10 dumps a frame to logs/\n");
+    std::fprintf(stderr,
+                 "[smw:oam] log on, dir %s : F10, or `touch %s/dump`, or "
+                 "SMA2_OAM_LOG_EVERY=N (ring oam-ring0..3.txt)\n",
+                 g_dir.string().c_str(), g_dir.string().c_str());
 }
 }  // namespace smw
