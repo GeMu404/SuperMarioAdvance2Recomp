@@ -89,3 +89,14 @@ Plan (un solo punto, sin listas por objeto):
 3. En la PPU, `g_ws_obj_x_provider` / `g_ws_obj_attr_x_provider` devuelven `real_x[idx]` solo si el slot se escribió en este cuadro. Si no se escribió, no se dibuja (eso mata los pegados).
 4. Mismo esquema para Y (8 bits) si aparecen fantasmas verticales.
 5. Una vez hecho, se pueden simplificar los recortes de arriba.
+
+### Hecho (sprites fantasma, X)
+
+- `src/smw_sprite_cull.cpp`: tablas `g_slot_x[128]`/`g_slot_frame[128]`. Se llenan con los hooks que ya estaban en el generated (sin tocarlo): `smw_ws_begin_screen_x` (X completa antes del `lsl #23`, 154 sitios) + `smw_ws_note_latched_slot` (slot tras el `strh` de attr1, 160 sitios), `smw_ws_note_obj_x` (3 sitios) y `smw_ws_shift_noted_x` (1).
+- `g_ws_obj_attr_x_provider = wide_obj_attr_x`: si la X anotada coincide en sus 9 bits con la del OAM y es de este cuadro, se usa la X real (sin vuelta). Si no coincide (ruta sin hook), se usa el pliegue de siempre. Si es de un cuadro anterior y el OAM no cambió, el slot es un resto y no se dibuja.
+- El contador de cuadro avanza en `smw_ws_expire_obj_x` (fin de render) solo si el juego escribió algún slot, para que los cuadros de lag no oculten todo.
+
+Pendiente / a vigilar:
+- Sprites que desaparecen de golpe: sería un slot que el juego deja quieto a propósito con la misma X (o el índice de OAM de hardware no coincide con el del soft-OAM). Ver si pasa en HUD/mensajes.
+- Rutas que escriben X sin hook siguen con el pliegue (fantasma posible). Si queda alguno, buscar su `strh` de attr1 y agregar el mismo par de hooks, no un caso especial.
+- Y (8 bits) sigue con el pliegue de banda.

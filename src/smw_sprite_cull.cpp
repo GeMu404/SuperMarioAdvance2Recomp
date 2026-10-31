@@ -496,19 +496,70 @@ int wide_obj_x(int raw_x, int* out_x) {
     return 1;
 }
 
+// Full signed screen X of each soft-OAM slot, noted by the generated
+// draw routines before they mask it to 9 bits, and the frame it was noted.
+std::int32_t g_latched_x = 0;
+std::int32_t g_slot_x[128] = {};
+std::uint32_t g_slot_frame[128] = {};
+std::uint32_t g_frame = 1;
+bool g_frame_had_writes = false;
+
+std::uint32_t slot_index(std::uint32_t slot) {
+    const std::uint32_t off = slot - smw_view::kSoftOam;
+    return (off & 7u) == 0u ? off >> 3 : 128u;
+}
+
+void note_slot_x(std::uint32_t slot, std::int32_t x) {
+    const std::uint32_t i = slot_index(slot);
+    if (i >= 128u) return;
+    g_slot_x[i] = x;
+    g_slot_frame[i] = g_frame;
+    g_frame_had_writes = true;
+}
+
+// Per-slot X: the noted full X when it still matches what is in OAM;
+// otherwise the fold. A slot noted on an earlier frame whose OAM X was not
+// touched since is a leftover (the game built OAM this frame but skipped
+// it): park it off-screen instead of drawing a ghost.
+int wide_obj_attr_x(int idx, std::uint16_t, std::uint16_t attr1,
+                    std::uint16_t, int* out_x) {
+    if (!out_x || idx < 0 || idx >= 128) return 0;
+    const int raw = attr1 & 0x1FF;
+    if (g_slot_frame[idx] == 0u || (g_slot_x[idx] & 0x1FF) != raw)
+        return wide_obj_x(raw, out_x);
+    if (g_slot_frame[idx] == g_frame) {
+        *out_x = g_slot_x[idx];
+        return 1;
+    }
+    *out_x = -1024;
+    return 1;
+}
+
 }  // namespace
 
 // Generated code still calls these per-slot note hooks. The tall view is
 // symmetric (extra_top == extra_bottom == 32 at 224 lines), so the PPU's
 // band fold of the 8-bit OAM Y is unambiguous and no per-slot state is kept.
-void smw_ws_note_obj_x(std::uint32_t, std::int32_t) {}
-void smw_ws_begin_screen_x(std::int32_t) {}
+void smw_ws_note_obj_x(std::uint32_t slot, std::int32_t x) {
+    note_slot_x(slot, x);
+}
+void smw_ws_begin_screen_x(std::int32_t x) { g_latched_x = x; }
 void smw_ws_begin_screen_y(std::int32_t) {}
 void smw_ws_arm_screen_y(std::int32_t) {}
 void smw_ws_keep_armed_y(std::uint32_t, std::uint32_t) {}
-void smw_ws_note_latched_slot(std::uint32_t) {}
-void smw_ws_shift_noted_x(std::uint32_t, std::int32_t) {}
-extern "C" void smw_ws_expire_obj_x(void) {}
+void smw_ws_note_latched_slot(std::uint32_t slot) {
+    note_slot_x(slot, g_latched_x);
+}
+void smw_ws_shift_noted_x(std::uint32_t slot, std::int32_t dx) {
+    const std::uint32_t i = slot_index(slot);
+    if (i < 128u && g_slot_frame[i] == g_frame) g_slot_x[i] += dx;
+}
+extern "C" void smw_ws_expire_obj_x(void) {
+    // Called once per rendered frame. A frame in which the game built no
+    // OAM at all (lag) keeps the previous records valid.
+    if (g_frame_had_writes) ++g_frame;
+    g_frame_had_writes = false;
+}
 void smw_ws_note_player_tile(std::uint32_t) {}
 void smw_ws_note_player_slot(std::uint32_t) {}
 void smw_ws_hide_player_piece(std::uint32_t sp) {
@@ -526,6 +577,7 @@ namespace smw {
 
 void install_sprite_cull_hooks() {
     gba::g_ws_obj_x_provider = wide_obj_x;
+    gba::g_ws_obj_attr_x_provider = wide_obj_attr_x;
     g_previous_bus_read = g_runtime_bus_read_override;
     g_runtime_bus_read_override = playfield_bus_read;
 }
