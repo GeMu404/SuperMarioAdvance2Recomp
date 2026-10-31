@@ -108,3 +108,8 @@ Pendiente / a vigilar:
 - Se quitó la regla "slot viejo con misma X → ocultar".
 
 A vigilar: objeto que *aparece* ya fuera del rango sin ambigüedad (X ∉ [−57,455), Y ∉ [−32,224)) arranca mal y la pista mantiene el error; dos objetos iguales cruzándose pueden intercambiar pista (inofensivo salvo que uno esté 512/256 px lejos); con Y del proveedor el PPU ya no aplica el parche de Mario bajo el piso (`g_ws_player_screen_y`), lo cubre la pista.
+
+### Corrección de 4db8d0d (regresión: Luigi/HUD/título/mapa)
+
+- Causa: el rastreador se reconstruía "una vez por cuadro" con un contador que avanzaba en `smw_ws_expire_obj_x`, que solo llama `GbaPpu::render()` (cuadro completo); el render real es por scanline en HBlank (`render_scanline`), así que la tabla quedó congelada desde el primer cuadro y todos los sprites usaban posiciones viejas, en todos los modos. Además el emparejamiento entre índices podía cruzar las piezas de Mario.
+- Ahora (`track_axis`): por índice de OAM y por eje, sin señal de cuadro (se actualiza cuando cambia el atributo). Si el pliegue cae en el área stock 240x160 se dibuja en el pliegue siempre y ancla la pista. Solo una entrada que cae en las franjas extra se mueve, y solo si su índice tiene pista anclada en el área stock con pasos ≤48 px y misma forma/tamaño(/paleta en X). Si no, pliegue. Ocultos del juego (disable, Y=0xC0) van a las reglas propias del PPU; el proveedor Y devuelve 0 (camino viejo del PPU, incluido el parche de Mario bajo el piso) salvo cuando corrige una vuelta.

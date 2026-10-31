@@ -517,25 +517,27 @@ void note_slot_x(std::uint32_t slot, std::int32_t x) {
     g_frame_had_writes = true;
 }
 
-// One tracker for every OAM entry, both axes. OAM keeps 9 bits of X and
-// 8 of Y; the wide view needs more than either ring leaves free, so an
-// object the game still draws past an edge (stock hid it behind the 240x160
-// glass) wraps back into the picture as a ghost. The OAM the game uploaded
-// this frame is the truth for what is drawn; what it lost is the high bits.
-// Those come back by continuity: each entry is matched to last frame's entry
-// of the same shape/size/palette nearest on the ring, and inherits its full
-// position plus the (small) wrapped step. New entries start from the band
-// fold, which is exact inside the view. A full X noted by the draw hooks
-// this frame overrides the X. The game's own hides (OBJ disable, Y=0xC0,
-// the Y=160/X=0/tile 0 free-slot park) end a track and are not drawn.
-struct Track {
-    bool live;
+// Wrap recovery, both axes, per OAM index. OAM keeps 9 bits of X and 8 of
+// Y; an object the game still draws past an edge (stock hid it behind the
+// 240x160 glass) wraps back into the wide view's extra bands as a ghost.
+// Rules, safe in every game mode:
+//  - An entry whose fold lands in the stock 240x160 area draws at the fold,
+//    always, and anchors a track for its index.
+//  - Only an entry folding into the extra bands may move, and only when its
+//    index carries a track that was anchored in the stock area and has
+//    changed by small steps since: it gets the unwrapped position.
+//  - Anything else (no track, big jump, other shape) draws at the fold.
+// Tracks update only when the entry's attribute changes, so the per-scanline
+// calls need no frame signal.
+struct AxisTrack {
+    bool anchored;
+    std::uint16_t raw;
     std::uint16_t key;
-    std::int32_t x, y;
+    std::int32_t pos;
 };
-Track g_track[128] = {};
-std::uint32_t g_render_seq = 1;
-std::uint32_t g_track_seq = 0;
+AxisTrack g_tx[128] = {};
+AxisTrack g_ty[128] = {};
+constexpr int kStep = 48;
 
 int ring(int d, int n) {
     d &= n - 1;
@@ -546,65 +548,55 @@ int fold_y(int raw) {
     return raw >= 256 - static_cast<int>(gba::g_ws_extra_top) ? raw - 256 : raw;
 }
 
-void rebuild_tracks() {
-    if (g_track_seq == g_render_seq) return;
-    g_track_seq = g_render_seq;
-    Track prev[128];
-    std::copy(g_track, g_track + 128, prev);
-    bool used[128] = {};
-    constexpr int kReach = 48;  // px per frame an entry may move and stay matched
-    for (int i = 0; i < 128; ++i) {
-        const std::uint32_t e = 0x07000000u + static_cast<std::uint32_t>(i) * 8u;
-        const std::uint16_t a0 = bus_read_u16(e);
-        const std::uint16_t a1 = bus_read_u16(e + 2u);
-        const std::uint16_t a2 = bus_read_u16(e + 4u);
-        Track& t = g_track[i];
-        const int ry = a0 & 0xFF, rx = a1 & 0x1FF;
-        const bool off = (a0 & 0x0300u) == 0x0200u || ry == 0xC0 ||
-                         (ry == 160 && rx == 0 && (a2 & 0x3FFu) == 0u);
-        if (off) { t.live = false; continue; }
-        const std::uint16_t key = static_cast<std::uint16_t>(
-            (a0 & 0xC300u) | ((a1 >> 14) << 4) | (a2 >> 12));
-        int best = -1, best_d = kReach + 1;
-        for (int j = 0; j < 128; ++j) {
-            const int k = (i + j) & 127;  // same index first
-            if (!prev[k].live || used[k] || prev[k].key != key) continue;
-            const int d = std::abs(ring(rx - prev[k].x, 512)) +
-                          std::abs(ring(ry - prev[k].y, 256));
-            if (d < best_d) { best_d = d; best = k; if (d == 0) break; }
-        }
-        t.live = true;
-        t.key = key;
-        if (best >= 0) {
-            used[best] = true;
-            t.x = prev[best].x + ring(rx - prev[best].x, 512);
-            t.y = prev[best].y + ring(ry - prev[best].y, 256);
-        } else {
-            int fx = rx;
-            wide_obj_x(rx, &fx);
-            t.x = fx;
-            t.y = fold_y(ry);
-        }
-        if (g_slot_frame[i] == g_frame && (g_slot_x[i] & 0x1FF) == rx)
-            t.x = g_slot_x[i];
+int track_axis(AxisTrack& t, int raw, std::uint16_t key, int fold, int ring_n,
+               int safe_lo, int safe_hi) {
+    if (fold >= safe_lo && fold < safe_hi) {
+        t = {true, static_cast<std::uint16_t>(raw), key, fold};
+        return fold;
     }
+    if (t.anchored && t.key == key) {
+        if (t.raw == raw) return t.pos;
+        const int d = ring(raw - t.raw, ring_n);
+        if (d >= -kStep && d <= kStep) {
+            t.raw = static_cast<std::uint16_t>(raw);
+            t.pos += d;
+            return t.pos;
+        }
+    }
+    t.anchored = false;
+    return fold;
 }
 
-int wide_obj_attr_x(int idx, std::uint16_t, std::uint16_t attr1,
-                    std::uint16_t, int* out_x) {
+int wide_obj_attr_x(int idx, std::uint16_t attr0, std::uint16_t attr1,
+                    std::uint16_t attr2, int* out_x) {
     if (!out_x || idx < 0 || idx >= 128) return 0;
-    rebuild_tracks();
-    if (!g_track[idx].live) return wide_obj_x(attr1 & 0x1FF, out_x);
-    *out_x = g_track[idx].x;
+    const int raw = attr1 & 0x1FF;
+    int fold = raw;
+    wide_obj_x(raw, &fold);
+    // A full X noted by the draw hooks for this slot, if it still matches.
+    if (g_slot_frame[idx] != 0u && (g_slot_x[idx] & 0x1FF) == raw &&
+        !(fold >= 0 && fold < 240))
+        fold = g_slot_x[idx];
+    const std::uint16_t key = static_cast<std::uint16_t>(
+        ((attr0 >> 14) << 6) | ((attr1 >> 14) << 4) | (attr2 >> 12));
+    *out_x = track_axis(g_tx[idx], raw, key, fold, 512, 0, 240);
     return 1;
 }
 
 int wide_obj_y(int idx, std::uint16_t attr0, int* out_y) {
     if (!out_y || idx < 0 || idx >= 128) return 0;
-    rebuild_tracks();
-    if (!g_track[idx].live) { *out_y = -1024; return 1; }  // game's hide
-    (void)attr0;
-    *out_y = g_track[idx].y;
+    const int raw = attr0 & 0xFF;
+    // The game's hides go to the PPU's own rules.
+    if ((attr0 & 0x0300u) == 0x0200u || raw == 0xC0) {
+        g_ty[idx].anchored = false;
+        g_tx[idx].anchored = false;
+        return 0;
+    }
+    const int fold = fold_y(raw);
+    const std::uint16_t key = static_cast<std::uint16_t>(attr0 >> 14);
+    const int y = track_axis(g_ty[idx], raw, key, fold, 256, 0, 160);
+    if (y == fold) return 0;  // PPU fold path, unchanged behaviour
+    *out_y = y;
     return 1;
 }
 
@@ -631,7 +623,6 @@ extern "C" void smw_ws_expire_obj_x(void) {
     // OAM at all (lag) keeps the previous records valid.
     if (g_frame_had_writes) ++g_frame;
     g_frame_had_writes = false;
-    ++g_render_seq;
 }
 void smw_ws_note_player_tile(std::uint32_t) {}
 void smw_ws_note_player_slot(std::uint32_t) {}
