@@ -100,3 +100,11 @@ Pendiente / a vigilar:
 - Sprites que desaparecen de golpe: sería un slot que el juego deja quieto a propósito con la misma X (o el índice de OAM de hardware no coincide con el del soft-OAM). Ver si pasa en HUD/mensajes.
 - Rutas que escriben X sin hook siguen con el pliegue (fantasma posible). Si queda alguno, buscar su `strh` de attr1 y agregar el mismo par de hooks, no un caso especial.
 - Y (8 bits) sigue con el pliegue de banda.
+
+### Hecho (sprites fantasma, X e Y: rastreador único)
+
+- Causa: ~405 funciones del ROM referencian el soft-OAM y solo ~160 `strh` de attr1 tienen hook; Yoshi, caparazones, etc. se dibujan por rutas sin nota → pliegue. Objetos que no se borran fuera de pantalla (Yoshi) el stock los dejaba en X 240..447 / Y 160..255, invisibles tras el vidrio 240x160; en la vista 398x224 el anillo de 9 bits (X) y 8 bits (Y) los devuelve adentro. Y no es una cuestión de "resto de cuadro anterior": el juego sí sube esa entrada cada cuadro.
+- Arreglo general (`rebuild_tracks` en `smw_sprite_cull.cpp`, una vez por cuadro, leyendo el OAM real): cada entrada se empareja con la del cuadro anterior de igual forma/tamaño/paleta más cercana en el anillo (≤48 px) y hereda su posición completa + el paso envuelto. Entradas nuevas parten del pliegue (exacto dentro de la vista). La X anotada por hooks de este cuadro manda. Ocultos del juego (OBJ disable, Y=0xC0, parque Y=160/X=0/tile 0) cortan la pista y no se dibujan. Ahora hay `g_ws_obj_y_provider = wide_obj_y`.
+- Se quitó la regla "slot viejo con misma X → ocultar".
+
+A vigilar: objeto que *aparece* ya fuera del rango sin ambigüedad (X ∉ [−57,455), Y ∉ [−32,224)) arranca mal y la pista mantiene el error; dos objetos iguales cruzándose pueden intercambiar pista (inofensivo salvo que uno esté 512/256 px lejos); con Y del proveedor el PPU ya no aplica el parche de Mario bajo el piso (`g_ws_player_screen_y`), lo cubre la pista.

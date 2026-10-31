@@ -517,29 +517,101 @@ void note_slot_x(std::uint32_t slot, std::int32_t x) {
     g_frame_had_writes = true;
 }
 
-// Per-slot X: the noted full X when it still matches what is in OAM;
-// otherwise the fold. A slot noted on an earlier frame whose OAM X was not
-// touched since is a leftover (the game built OAM this frame but skipped
-// it): park it off-screen instead of drawing a ghost.
+// One tracker for every OAM entry, both axes. OAM keeps 9 bits of X and
+// 8 of Y; the wide view needs more than either ring leaves free, so an
+// object the game still draws past an edge (stock hid it behind the 240x160
+// glass) wraps back into the picture as a ghost. The OAM the game uploaded
+// this frame is the truth for what is drawn; what it lost is the high bits.
+// Those come back by continuity: each entry is matched to last frame's entry
+// of the same shape/size/palette nearest on the ring, and inherits its full
+// position plus the (small) wrapped step. New entries start from the band
+// fold, which is exact inside the view. A full X noted by the draw hooks
+// this frame overrides the X. The game's own hides (OBJ disable, Y=0xC0,
+// the Y=160/X=0/tile 0 free-slot park) end a track and are not drawn.
+struct Track {
+    bool live;
+    std::uint16_t key;
+    std::int32_t x, y;
+};
+Track g_track[128] = {};
+std::uint32_t g_render_seq = 1;
+std::uint32_t g_track_seq = 0;
+
+int ring(int d, int n) {
+    d &= n - 1;
+    return d >= n / 2 ? d - n : d;
+}
+
+int fold_y(int raw) {
+    return raw >= 256 - static_cast<int>(gba::g_ws_extra_top) ? raw - 256 : raw;
+}
+
+void rebuild_tracks() {
+    if (g_track_seq == g_render_seq) return;
+    g_track_seq = g_render_seq;
+    Track prev[128];
+    std::copy(g_track, g_track + 128, prev);
+    bool used[128] = {};
+    constexpr int kReach = 48;  // px per frame an entry may move and stay matched
+    for (int i = 0; i < 128; ++i) {
+        const std::uint32_t e = 0x07000000u + static_cast<std::uint32_t>(i) * 8u;
+        const std::uint16_t a0 = bus_read_u16(e);
+        const std::uint16_t a1 = bus_read_u16(e + 2u);
+        const std::uint16_t a2 = bus_read_u16(e + 4u);
+        Track& t = g_track[i];
+        const int ry = a0 & 0xFF, rx = a1 & 0x1FF;
+        const bool off = (a0 & 0x0300u) == 0x0200u || ry == 0xC0 ||
+                         (ry == 160 && rx == 0 && (a2 & 0x3FFu) == 0u);
+        if (off) { t.live = false; continue; }
+        const std::uint16_t key = static_cast<std::uint16_t>(
+            (a0 & 0xC300u) | ((a1 >> 14) << 4) | (a2 >> 12));
+        int best = -1, best_d = kReach + 1;
+        for (int j = 0; j < 128; ++j) {
+            const int k = (i + j) & 127;  // same index first
+            if (!prev[k].live || used[k] || prev[k].key != key) continue;
+            const int d = std::abs(ring(rx - prev[k].x, 512)) +
+                          std::abs(ring(ry - prev[k].y, 256));
+            if (d < best_d) { best_d = d; best = k; if (d == 0) break; }
+        }
+        t.live = true;
+        t.key = key;
+        if (best >= 0) {
+            used[best] = true;
+            t.x = prev[best].x + ring(rx - prev[best].x, 512);
+            t.y = prev[best].y + ring(ry - prev[best].y, 256);
+        } else {
+            int fx = rx;
+            wide_obj_x(rx, &fx);
+            t.x = fx;
+            t.y = fold_y(ry);
+        }
+        if (g_slot_frame[i] == g_frame && (g_slot_x[i] & 0x1FF) == rx)
+            t.x = g_slot_x[i];
+    }
+}
+
 int wide_obj_attr_x(int idx, std::uint16_t, std::uint16_t attr1,
                     std::uint16_t, int* out_x) {
     if (!out_x || idx < 0 || idx >= 128) return 0;
-    const int raw = attr1 & 0x1FF;
-    if (g_slot_frame[idx] == 0u || (g_slot_x[idx] & 0x1FF) != raw)
-        return wide_obj_x(raw, out_x);
-    if (g_slot_frame[idx] == g_frame) {
-        *out_x = g_slot_x[idx];
-        return 1;
-    }
-    *out_x = -1024;
+    rebuild_tracks();
+    if (!g_track[idx].live) return wide_obj_x(attr1 & 0x1FF, out_x);
+    *out_x = g_track[idx].x;
+    return 1;
+}
+
+int wide_obj_y(int idx, std::uint16_t attr0, int* out_y) {
+    if (!out_y || idx < 0 || idx >= 128) return 0;
+    rebuild_tracks();
+    if (!g_track[idx].live) { *out_y = -1024; return 1; }  // game's hide
+    (void)attr0;
+    *out_y = g_track[idx].y;
     return 1;
 }
 
 }  // namespace
 
-// Generated code still calls these per-slot note hooks. The tall view is
-// symmetric (extra_top == extra_bottom == 32 at 224 lines), so the PPU's
-// band fold of the 8-bit OAM Y is unambiguous and no per-slot state is kept.
+// Per-slot note hooks called by generated code. Y has no notes: it is
+// recovered by the tracker above.
 void smw_ws_note_obj_x(std::uint32_t slot, std::int32_t x) {
     note_slot_x(slot, x);
 }
@@ -559,6 +631,7 @@ extern "C" void smw_ws_expire_obj_x(void) {
     // OAM at all (lag) keeps the previous records valid.
     if (g_frame_had_writes) ++g_frame;
     g_frame_had_writes = false;
+    ++g_render_seq;
 }
 void smw_ws_note_player_tile(std::uint32_t) {}
 void smw_ws_note_player_slot(std::uint32_t) {}
@@ -578,6 +651,7 @@ namespace smw {
 void install_sprite_cull_hooks() {
     gba::g_ws_obj_x_provider = wide_obj_x;
     gba::g_ws_obj_attr_x_provider = wide_obj_attr_x;
+    gba::g_ws_obj_y_provider = wide_obj_y;
     g_previous_bus_read = g_runtime_bus_read_override;
     g_runtime_bus_read_override = playfield_bus_read;
 }
