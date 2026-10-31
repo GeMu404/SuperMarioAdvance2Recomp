@@ -132,3 +132,9 @@ A vigilar: objeto que *aparece* ya fuera del rango sin ambigüedad (X ∉ [−57
 - `SMA2_OAM_LOG=1` (apagado por defecto). Disparadores: F10, `touch logs/dump` (se borra al volcar), `SMA2_OAM_LOG_EVERY=N` (anillo logs/oam-ring0..3.txt), `SMA2_OAM_LOG_FRAME=<vblank>`. Carpeta: `logs/` relativa al cwd (o `SMA2_OAM_LOG_DIR`); la ruta absoluta se imprime al iniciar.
 - Columnas: slot, PC que escribió attr0/attr1/attr2, attrs, Y, X 9 bits, tile, forma/tamaño, X del pliegue, X completa latcheada (si la ruta tiene hook; `-` si no).
 - `src/smw_oam_log.cpp` + observador de escrituras en gbarecomp (`g_runtime_write_observer` en `runtime_trace_event`, F10 en `host_window`).
+
+### Causa del fantasma de Yoshi (log OAM, vblank 2220-2250)
+
+- Slots 71/72 (16x16, paleta 5, tiles 6/8, Y oscilando 89..92): attr1 por `0x0802CC9A`, X 9 bits 147/137, X real latcheada −365/−375 → −365 & 0x1FF = 147: Yoshi muy a la izquierda, dibujado dentro de la vista.
+- `Sub0802CB44` (y las rutinas hermanas 0x0802CAxx/0x0802CExx/0x0802D1xx): si `(sx+32)<<16 > 0x014F0000` (o `0x012F0000`) estacionan la entrada con X = 0x130/0x110 (304/272, fuera de los 240 stock). Esos 6 `strh` estaban borrados a mano en generated/ (el `bus_write_u16` faltaba, solo quedaba el trace), porque 272/304 se ve en la vista ancha. Sin el estacionamiento queda la X real cortada a 9 bits → fantasma.
+- Arreglo: `tools/restore_obj_park_writes.py` (idempotente, respaldo en `/mnt/SSD1/sma2-bak-widen/`) repone las 6 escrituras con X = `smw_ws_obj_park_x()` = view_w+8 (406: fuera de la vista y antes del pliegue 455). El umbral `0x014F0000` (pool 0x0802CCD0) se ensancha como el de 0x12F (sx ≤ 429).

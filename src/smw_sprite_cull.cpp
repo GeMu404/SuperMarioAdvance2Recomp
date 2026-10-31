@@ -389,6 +389,15 @@ int widen_load_table(std::uint32_t addr, std::uint32_t width,
         return 0;
     }
 
+    // Yoshi draw (Sub0802CB44): (sx+32)<<16 > 0x014F0000 -> park X. Stock
+    // keeps sx <= 303; widen to the same edge as 0x12F (sx <= 429, inside
+    // the 9-bit fold band) so the park only hits entries outside the view.
+    if (rom_literal && width == 4u && addr == 0x0802CCD0u &&
+        original == 0x014F0000u) {
+        *out = (0x12Fu + g_ws_extra_left + g_ws_extra_right) << 16;
+        return 1;
+    }
+
     // Soft-OAM / draw hide: (sx+32) > 0x12F → park Y at 0xC0.
     // Stock 0x12F=303 ⇒ sx>271. Wide must reach view_w+slack.
     if (rom_literal && width == 4u && original == 0x012F0000u) {
@@ -576,6 +585,16 @@ void smw_ws_arm_kept_row(int, int) {}
 void smw_ws_remember_margin_row(void) {}
 void smw_ws_note_obj_y_stored(std::uint32_t, std::uint32_t) {}
 void smw_ws_note_obj_y_tile(std::uint32_t, std::int32_t, std::uint32_t) {}
+
+// X the game's "park offscreen" writes store (stock 272/304, which the wide
+// view shows). A spot past the view's right edge but before the 9-bit fold,
+// so the PPU places it off the picture whatever the sprite width.
+std::uint32_t smw_ws_obj_park_x(void) {
+    const int view = smw_view::view_w();
+    const int fold = view + (512 - view) / 2;
+    const int park = view + 8 < fold ? view + 8 : view;
+    return static_cast<std::uint32_t>(park) & 0x1FFu;
+}
 
 namespace smw {
 
