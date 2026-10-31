@@ -573,12 +573,19 @@ int wide_obj_attr_x(int idx, std::uint16_t attr0, std::uint16_t attr1,
     const int raw = attr1 & 0x1FF;
     int fold = raw;
     wide_obj_x(raw, &fold);
-    // A full X noted by the draw hooks for this slot, if it still matches.
-    if (g_slot_frame[idx] != 0u && (g_slot_x[idx] & 0x1FF) == raw &&
-        !(fold >= 0 && fold < 240))
-        fold = g_slot_x[idx];
     const std::uint16_t key = static_cast<std::uint16_t>(
         ((attr0 >> 14) << 6) | ((attr1 >> 14) << 4) | (attr2 >> 12));
+    // A full X noted by the draw hooks for this slot wins outside the stock
+    // area: it is the game's own value before the 9-bit cut. Past the view
+    // it simply lands off the picture (hidden). It also re-anchors the track.
+    if (g_slot_frame[idx] != 0u && (g_slot_x[idx] & 0x1FF) == raw &&
+        !(fold >= 0 && fold < 240)) {
+        g_tx[idx] = {true, static_cast<std::uint16_t>(raw), key, g_slot_x[idx]};
+        const int v = smw_view::view_w();
+        *out_x = (g_slot_x[idx] < -64 || g_slot_x[idx] >= v + 64) ? -1024
+                                                                 : g_slot_x[idx];
+        return 1;
+    }
     *out_x = track_axis(g_tx[idx], raw, key, fold, 512, 0, 240);
     return 1;
 }

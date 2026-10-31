@@ -113,3 +113,10 @@ A vigilar: objeto que *aparece* ya fuera del rango sin ambigüedad (X ∉ [−57
 
 - Causa: el rastreador se reconstruía "una vez por cuadro" con un contador que avanzaba en `smw_ws_expire_obj_x`, que solo llama `GbaPpu::render()` (cuadro completo); el render real es por scanline en HBlank (`render_scanline`), así que la tabla quedó congelada desde el primer cuadro y todos los sprites usaban posiciones viejas, en todos los modos. Además el emparejamiento entre índices podía cruzar las piezas de Mario.
 - Ahora (`track_axis`): por índice de OAM y por eje, sin señal de cuadro (se actualiza cuando cambia el atributo). Si el pliegue cae en el área stock 240x160 se dibuja en el pliegue siempre y ancla la pista. Solo una entrada que cae en las franjas extra se mueve, y solo si su índice tiene pista anclada en el área stock con pasos ≤48 px y misma forma/tamaño(/paleta en X). Si no, pliegue. Ocultos del juego (disable, Y=0xC0) van a las reglas propias del PPU; el proveedor Y devuelve 0 (camino viejo del PPU, incluido el parche de Mario bajo el piso) salvo cuando corrige una vuelta.
+
+### Hooks de X completa en todas las rutas `lsl #23` → `strh [rB,#2]`
+
+- `tools/add_obj_x_hooks.py` (idempotente; re-aplicar tras regenerar): por cada `lsl rD,rS,#23` seguido en ≤16 instrucciones de `strh rV,[rB,#0x2]` mete `smw_ws_begin_screen_x(R[rS])` en el lsl y `smw_ws_note_latched_slot(R[rB])` tras el `bus_write_u16`. Uso: `python tools/add_obj_x_hooks.py [--dry] [--backup-dir DIR]`. Respaldo de esta pasada: `/mnt/SSD1/sma2-bak-hooks2/*.bak-hooks2`.
+- Cobertura: sitios `lsl #23` con hook 138 → 262 (de 342; 253 tienen el strh cerca, todos cubiertos). `note_latched_slot` 160 → 267 de 426 `strh [r,#2]`.
+- Quedan ~159 `strh [r,#2]` sin nota: lectura-modificación de attr1 (`ldrh; ands 0xFE00; orrs X`) con X cortada por `& 0xFF`, o 16.16 `lsl #15; lsr #23`. No se cubren aún.
+- Proveedor: X anotada que coincide en 9 bits gana fuera del área stock (y re-ancla la pista); si está fuera de la vista ±64 se oculta. Área stock 0..239 sigue siempre con pliegue.
