@@ -59,11 +59,16 @@ static unsigned g_mode0_bg_bytes;
 // screen there. Every other level streams its own background, so the
 // fill below must not touch it.
 static bool g_mode0_static_bg = false;
+// Whether this file's Map16 decode reproduces the screen the level load
+// wrote (-1 = not checked yet this level). Backgrounds whose IDs index a
+// different table decode to foreground tiles; those must stay stock.
+static int g_mode0_decode_ok = -1;
 static unsigned g_mode0_last_layer2 = ~0u;
 
 extern "C" void smw_ws_note_mode0_bg_bytes(std::uint32_t n) {
     g_mode0_bg_bytes = n;
     g_mode0_static_bg = false;
+    g_mode0_decode_ok = -1;
     g_mode0_last_layer2 = ~0u;
 }
 
@@ -90,7 +95,7 @@ static int mode0_map16_hw(unsigned id, unsigned sub, std::uint16_t* out) {
 // The 512px image is wider than the half the scan is showing as sky.
 extern "C" int smw_ws_mode0_bg_sample(unsigned tile_x, unsigned tile_y,
                                      std::uint16_t* out) {
-    if (!g_mode0_static_bg || g_mode0_bg_bytes < 0x1B0u || out == nullptr)
+    if (!g_mode0_static_bg || g_mode0_decode_ok != 1 || g_mode0_bg_bytes < 0x1B0u || out == nullptr)
         return 0;
     const std::uint32_t level = bus_read_u32(smw_view::kLevelPtr);
     if (level < 0x02000000u || level >= 0x04000000u) return 0;
@@ -115,20 +120,22 @@ extern "C" int smw_ws_mode0_bg_sample(unsigned tile_x, unsigned tile_y,
 // Sub0800FF44 writes one 16px column from that buffer. The per-frame loader
 // for this mode returns without doing it, so only the 32 columns from level
 // load are in the 512px map. The wide view reads past them.
-static void mode0_paint(std::uint32_t dest, unsigned packed, std::uint16_t hw,
-                        int right_tile) {
+static std::uint32_t mode0_vram_addr(std::uint32_t dest, unsigned packed,
+                                      int right_tile) {
     const std::uint32_t base = packed < 32u
         ? (right_tile ? 0x06000002u : 0x06000000u)
         : (right_tile ? 0x06001002u : 0x06001000u);
     const unsigned i = packed < 32u ? packed : packed - 32u;
-    bus_write_u16(base + dest + i * 0x40u, hw);
+    return base + dest + i * 0x40u;
 }
 
-static void mode0_upload_column(unsigned col) {
+// write = 1 paints the column; write = 0 only compares it with VRAM and
+// returns 0 on the first cell that differs.
+static int mode0_column(unsigned col, int write) {
     const unsigned screen = col >> 4;
     const unsigned base = screen * 0x1B0u;
     const unsigned x = col & 0xFu;
-    if (base + 0x1AFu >= g_mode0_bg_bytes || base + 0x1AFu >= 0x400u) return;
+    if (base + 0x1AFu >= g_mode0_bg_bytes || base + 0x1AFu >= 0x400u) return 0;
     const std::uint32_t dest = 0xC000u + (x << 2) + ((col & 0x10u) ? 0x800u : 0u);
     unsigned packed = 0;
     for (unsigned idx = x; idx <= 0x1AFu; idx += 0x10u, packed += 2u) {
@@ -142,11 +149,24 @@ static void mode0_upload_column(unsigned col) {
             mode0_map16_hw(id & 0x1FFu, 2u, &hw2);
             mode0_map16_hw(id & 0x1FFu, 3u, &hw3);
         }
-        mode0_paint(dest, packed,     hw0, 0);
-        mode0_paint(dest, packed + 1u, hw1, 0);
-        mode0_paint(dest, packed,     hw2, 1);
-        mode0_paint(dest, packed + 1u, hw3, 1);
+        const std::uint32_t at[4] = {
+            mode0_vram_addr(dest, packed, 0), mode0_vram_addr(dest, packed + 1u, 0),
+            mode0_vram_addr(dest, packed, 1), mode0_vram_addr(dest, packed + 1u, 1)};
+        const std::uint16_t hw[4] = {hw0, hw1, hw2, hw3};
+        for (int k = 0; k < 4; ++k) {
+            if (write) bus_write_u16(at[k], hw[k]);
+            else if (bus_read_u16(at[k]) != hw[k]) return 0;
+        }
     }
+    return 1;
+}
+
+// The level load wrote columns 0..15 itself. Extend only when decoding
+// those same columns gives back exactly what it wrote.
+static int mode0_decode_matches_load(void) {
+    for (unsigned col = 0; col < 16u; ++col)
+        if (!mode0_column(col, 0)) return 0;
+    return 1;
 }
 
 // Called when the per-frame layer-2 loader is the no-op (Return0800FD98).
@@ -160,6 +180,8 @@ extern "C" void smw_ws_mode0_bg_refresh(void) {
         return;
     if (bus_read_u16(level + 0x1Eu) & 2u) return;
     const unsigned layer2 = bus_read_u16(0x03002C0Cu);
+    if (g_mode0_decode_ok < 0) g_mode0_decode_ok = mode0_decode_matches_load();
+    if (g_mode0_decode_ok != 1) return;
     if (g_mode0_last_layer2 == layer2) return;
     g_mode0_last_layer2 = layer2;
     const unsigned view = static_cast<unsigned>(smw_view::view_w());
@@ -169,7 +191,7 @@ extern "C" void smw_ws_mode0_bg_refresh(void) {
     // the wide view reaches the second screen of this background, which is
     // the right side of the hill.
     for (unsigned col = left < 16u ? 16u : left; col <= right; ++col)
-        mode0_upload_column(col);
+        mode0_column(col, 1);
 }
 
 namespace smw {
