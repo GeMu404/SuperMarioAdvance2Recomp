@@ -10,6 +10,7 @@
 #include "runtime_arm.h"
 #include "runtime_bus_bridge.h"
 #include "smw_sprite_cull.h"
+#include "smw_view.h"
 
 extern "C" unsigned g_ws_extra_left;
 extern "C" unsigned g_ws_extra_right;
@@ -22,7 +23,7 @@ extern "C" unsigned g_ws_extra_right;
 // old 240 edge and the hill is sliced there. One column stays behind
 // the camera. The other 31 of the ring go in front of it.
 extern "C" std::uint32_t smw_ws_stream_lead(void) {
-    const unsigned view = 240u + g_ws_extra_left + g_ws_extra_right;
+    const unsigned view = static_cast<unsigned>(smw_view::view_w());
     const unsigned cols = (view + 15u) / 16u;
     if (cols >= 32u) return 0u;
     return 1u;
@@ -66,7 +67,7 @@ extern "C" void smw_ws_note_mode0_bg_bytes(std::uint32_t n) {
 static int mode0_map16_hw(unsigned id, unsigned sub, std::uint16_t* out) {
     if (out == nullptr || sub > 3u) return 0;
     const unsigned slot = id & 0x1FFu;
-    const std::uint32_t level = bus_read_u32(0x03003F98u);
+    const std::uint32_t level = bus_read_u32(smw_view::kLevelPtr);
     if (level >= 0x02000000u && level < 0x04000000u && (id & 0x3FFFu) <= 0x1FFu) {
         const std::uint32_t ptr = bus_read_u32(level + 0xE8u + (slot << 2));
         if (ptr >= 0x08000000u && ptr < 0x0A000000u) {
@@ -83,7 +84,7 @@ static int mode0_map16_hw(unsigned id, unsigned sub, std::uint16_t* out) {
 extern "C" int smw_ws_mode0_bg_sample(unsigned tile_x, unsigned tile_y,
                                      std::uint16_t* out) {
     if (g_mode0_bg_bytes < 0x1B0u || out == nullptr) return 0;
-    const std::uint32_t level = bus_read_u32(0x03003F98u);
+    const std::uint32_t level = bus_read_u32(smw_view::kLevelPtr);
     if (level < 0x02000000u || level >= 0x04000000u) return 0;
     const unsigned mode = bus_read_u16(level + 4u);
     if (mode != 0u && mode != 0x0Au && mode != 0x0Cu && mode != 0x0Du &&
@@ -143,7 +144,7 @@ static void mode0_upload_column(unsigned col) {
 // Called when the per-frame layer-2 loader is the no-op (Return0800FD98).
 extern "C" void smw_ws_mode0_bg_refresh(void) {
     if (g_mode0_bg_bytes == 0u) return;
-    const std::uint32_t level = bus_read_u32(0x03003F98u);
+    const std::uint32_t level = bus_read_u32(smw_view::kLevelPtr);
     if (level < 0x02000000u || level >= 0x04000000u) return;
     const unsigned mode = bus_read_u16(level + 4u);
     if (mode != 0u && mode != 0x0Au && mode != 0x0Cu && mode != 0x0Du && mode != 0x0Eu)
@@ -153,7 +154,7 @@ extern "C" void smw_ws_mode0_bg_refresh(void) {
     static unsigned last = ~0u;
     if (last == layer2) return;
     last = layer2;
-    const unsigned view = 240u + g_ws_extra_left + g_ws_extra_right;
+    const unsigned view = static_cast<unsigned>(smw_view::view_w());
     const unsigned left = layer2 >> 4;
     const unsigned right = (layer2 + view - 1u) >> 4;
     // Columns 0..15 stay as the level load wrote them. From column 16 on,
@@ -170,13 +171,13 @@ int (*g_previous_tilemap_provider)(int, int, int, std::uint16_t*) = nullptr;
 int (*g_previous_bg_x_provider)(int, int, int, int*) = nullptr;
 void (*g_previous_fn_entry)(std::uint32_t) = nullptr;
 
-constexpr std::uint32_t kLayer1X = 0x03002C04u;
-constexpr std::uint32_t kLayer1Y = 0x03002C08u;
+constexpr std::uint32_t kLayer1X = smw_view::kLayer1X;
+constexpr std::uint32_t kLayer1Y = smw_view::kLayer1Y;
 constexpr std::uint32_t kCamX = 0x03002BF0u;
 constexpr std::uint32_t kCamY = 0x03002BF4u;
 constexpr std::uint32_t kPlayerX = 0x03003FD0u;
 constexpr std::uint32_t kPlayerY = 0x03003FD4u;
-constexpr std::uint32_t kLevelObj = 0x03003F98u;
+constexpr std::uint32_t kLevelObj = smw_view::kLevelPtr;
 constexpr std::uint32_t kBase = 0x03002340u;
 constexpr std::uint32_t kDeadzone = kBase + 0x1D08u;
 constexpr std::uint32_t kCamFollow = 0x08006434u;
@@ -237,8 +238,8 @@ void apply_wide_guest_cam(bool before_follow) {
     std::uint32_t level = 0;
     if (!read_room_size(&room_w, &room_h, &cam_min, &level)) return;
 
-    const int view_w = 240 + extra_l + extra_r;
-    const int view_h = 160 + extra_t + extra_b;
+    const int view_w = smw_view::kNativeW + extra_l + extra_r;
+    const int view_h = smw_view::kNativeH + extra_t + extra_b;
     // Deadzone stays the facing store (0x4E / 0x80). The wide measure is
     // the follow's screen subtract. Do not write it.
 
@@ -289,8 +290,8 @@ void publish_camera() {
     const int extra_l = static_cast<int>(g_ws_extra_left);
     const int extra_t = static_cast<int>(gba::g_ws_extra_top);
     const int extra_b = static_cast<int>(gba::g_ws_extra_bottom);
-    const int view_w = 240 + static_cast<int>(g_ws_extra_left + g_ws_extra_right);
-    const int view_h = 160 + extra_t + extra_b;
+    const int view_w = smw_view::view_w();
+    const int view_h = smw_view::kNativeH + extra_t + extra_b;
     // Detach status as a host UI overlay (stamp tiles + peek punch). Never use
     // scanline pin — that redraws whole guest rows and shears the BG.
     gba::g_ws_status_ui_pin = 0;
@@ -325,7 +326,7 @@ void publish_camera() {
     int origin_y = layer1_y - extra_t;
     const bool stock_y_in_room =
         room_h > 0 && layer1_y >= 0 &&
-        (layer1_y + 160) <= room_h;
+        (layer1_y + smw_view::kNativeH) <= room_h;
     if (room_w > view_w) {
         origin_x = std::clamp(origin_x, 0, room_w - view_w);
     } else if (room_w > 0) {
@@ -485,8 +486,8 @@ int streamed_tilemap_provider(int bg, int hw_x, int screen_y,
     // Never blank peek/margins with Unavailable — KeepWrapped fills world.
     // SMA2 streams columns via UpdateVramTileMaps; accepting the wrapped
     // entry also authorizes BG outside native WIN0/WIN1.
-    if (bg >= 0 && bg < 4 && (hw_x < 0 || hw_x >= 240 || screen_y < 0 ||
-                              screen_y >= 160)) {
+    if (bg >= 0 && bg < 4 && (hw_x < 0 || hw_x >= smw_view::kNativeW || screen_y < 0 ||
+                              screen_y >= smw_view::kNativeH)) {
         return gba::kWsTilemapKeepWrapped;
     }
     return g_previous_tilemap_provider
@@ -517,7 +518,7 @@ int bounded_bg_x(int bg, int output_x, int screen_y, int* out_hw_x) {
             *out_hw_x = 0;
             return 1;
         }
-        if (output_x >= left + 240) {
+        if (output_x >= left + smw_view::kNativeW) {
             *out_hw_x = 239;
             return 1;
         }

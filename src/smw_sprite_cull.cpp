@@ -1,4 +1,5 @@
 #include "smw_sprite_cull.h"
+#include "smw_view.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -21,13 +22,13 @@ constexpr unsigned kYMargin = 32u;
 // Wide: X max is the full host view (240+el+er), not native+er only —
 // when bias==extra_left the FB right edge is guest screen_x ≈ view_w.
 extern "C" std::uint32_t smw_ws_sprite_cull_xmax(void) {
-    return 240u + g_ws_extra_left + g_ws_extra_right + 32u + kViewportSlack;
+    return static_cast<unsigned>(smw_view::view_w()) + 32u + kViewportSlack;
 }
 
 extern "C" std::uint32_t smw_ws_sprite_cull_ymax(void) {
     // Same byte as a row above the glass. Anything past the last
     // picture row must not be submitted, or it is drawn at the top.
-    const unsigned bottom = 160u + gba::g_ws_extra_bottom;
+    const unsigned bottom = static_cast<unsigned>(smw_view::kNativeH) + gba::g_ws_extra_bottom;
     return bottom > 0u ? bottom - 1u : 0u;
 }
 
@@ -56,7 +57,7 @@ std::uint32_t smw_ws_sprite_y_above(std::uint32_t stock) {
 
 std::uint32_t smw_ws_sprite_y_floor(void) {
     // 160 + extra_bottom - 1. Inclusive: a tile on the last row stays.
-    const unsigned bottom = 160u + gba::g_ws_extra_bottom;
+    const unsigned bottom = static_cast<unsigned>(smw_view::kNativeH) + gba::g_ws_extra_bottom;
     return bottom > 0u ? bottom - 1u : 0u;
 }
 
@@ -69,7 +70,7 @@ std::uint32_t smw_ws_sprite_y_head_pad(void) {
 }
 
 std::uint32_t smw_ws_fold_peek_row(std::uint32_t y) {
-    if (gba::g_ws_player_screen_y >= 160) return y;
+    if (gba::g_ws_player_screen_y >= smw_view::kNativeH) return y;
     if (y >= 192u && y <= 255u)
         return static_cast<std::uint32_t>(static_cast<int>(y) - 256);
     return y;
@@ -79,7 +80,7 @@ int smw_ws_player_y_in_view(std::uint32_t y16) {
     const int sy = static_cast<std::int16_t>(y16 & 0xFFFFu);
     const int top = -static_cast<int>(gba::g_ws_extra_top) -
                     static_cast<int>(kYMargin);
-    const int bot = 160 + static_cast<int>(gba::g_ws_extra_bottom) + 80;
+    const int bot = smw_view::kNativeH + static_cast<int>(gba::g_ws_extra_bottom) + 80;
     return (sy >= top && sy < bot) ? 1 : 0;
 }
 
@@ -114,13 +115,13 @@ std::uint32_t smw_ws_keep_screen_y(std::uint32_t oam, std::int32_t y) {
     int sy = y;
     if (sy >= 0 && sy <= 0xFFFF && (sy & 0x8000))
         sy = static_cast<std::int16_t>(sy);
-    else if (sy >= 160 && sy <= 255)
+    else if (sy >= smw_view::kNativeH && sy <= 255)
         sy -= 256;
     // Death fall: the real row is under the floor. Leave the hide.
-    if (gba::g_ws_player_screen_y >= 160) return 0xC0u;
+    if (gba::g_ws_player_screen_y >= smw_view::kNativeH) return 0xC0u;
     const int top = -static_cast<int>(gba::g_ws_extra_top) -
                     static_cast<int>(kYMargin);
-    if (sy < top || sy >= 160) return 0xC0u;
+    if (sy < top || sy >= smw_view::kNativeH) return 0xC0u;
     smw_ws_note_obj_y(oam, sy);
     return static_cast<std::uint32_t>(sy) & 0xFFu;
 }
@@ -182,7 +183,7 @@ extern "C" std::uint32_t smw_ws_spawn_sweep_back(void) {
 extern "C" std::uint32_t smw_ws_spawn_sweep_last(void) {
     const unsigned back = 0x60u + g_ws_extra_left;
     const unsigned right =
-        240u + g_ws_extra_left + g_ws_extra_right + 48u;
+        static_cast<unsigned>(smw_view::view_w()) + 48u;
     const unsigned span = back + right;
     const unsigned steps = (span + 15u) / 16u;
     const unsigned last = steps > 0u ? (steps - 1u) : 0u;
@@ -280,7 +281,7 @@ extern "C" std::uint32_t smw_ws_offscreen_y_test(std::uint32_t screen_y) {
         static int hits = 0;
         if (hits < 8) {
             const int py = static_cast<std::int16_t>(bus_read_u16(0x03003FD4u));
-            const int ly = static_cast<std::int16_t>(bus_read_u16(0x03002C08u));
+            const int ly = static_cast<std::int16_t>(bus_read_u16(smw_view::kLayer1Y));
             std::fprintf(stderr, "[smw:pit] screen_y=%d player_y=%d L1y=%d\n",
                          sy, py, ly);
             ++hits;
@@ -303,11 +304,11 @@ extern "C" std::uint32_t smw_ws_sprite_vis_x_pad_shl16(void) {
 // so that window marks the top rows off and the sprite never starts.
 extern "C" std::uint32_t smw_ws_sprite_offscreen_y_mask(std::uint32_t sprite) {
     const int sy = static_cast<std::int16_t>(bus_read_u16(sprite + 0x12u));
-    const int ly = static_cast<std::int16_t>(bus_read_u16(0x03002C08u));
+    const int ly = static_cast<std::int16_t>(bus_read_u16(smw_view::kLayer1Y));
     const int rel = sy - ly;
     const int top = -48 - static_cast<int>(gba::g_ws_extra_top) -
                     static_cast<int>(kYMargin);
-    const int bot = 160 + static_cast<int>(gba::g_ws_extra_bottom) + 48 +
+    const int bot = smw_view::kNativeH + static_cast<int>(gba::g_ws_extra_bottom) + 48 +
                     static_cast<int>(kViewportSlack);
     const std::uint32_t off = (rel < top || rel > bot) ? 0x100u : 0u;
     smw_ws_log_y_real(sprite, rel, off);
@@ -470,8 +471,8 @@ int wide_obj_x(int raw_x, int* out_x) {
     if (!out_x) return 0;
     const int el = static_cast<int>(g_ws_extra_left);
     const int er = static_cast<int>(g_ws_extra_right);
-    const int unused = 512 - 240 - el - er;
-    const int fold = 240 + er + (unused > 0 ? unused / 2 : 0);
+    const int unused = 512 - smw_view::kNativeW - el - er;
+    const int fold = smw_view::kNativeW + er + (unused > 0 ? unused / 2 : 0);
     *out_x = raw_x >= fold ? raw_x - 512 : raw_x;
     return 1;
 }
@@ -494,7 +495,7 @@ void smw_ws_note_player_slot(std::uint32_t) {}
 void smw_ws_hide_player_piece(std::uint32_t sp) {
     const std::uint32_t index = bus_read_u32(sp);
     if (index >= 128u) return;
-    bus_write_u8(0x03002C28u + (index << 3), 0xC0u);
+    bus_write_u8(smw_view::kSoftOam + (index << 3), 0xC0u);
 }
 void smw_ws_note_obj_y(std::uint32_t, std::int32_t) {}
 void smw_ws_arm_kept_row(int, int) {}
