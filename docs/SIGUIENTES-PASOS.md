@@ -120,3 +120,9 @@ A vigilar: objeto que *aparece* ya fuera del rango sin ambigüedad (X ∉ [−57
 - Cobertura: sitios `lsl #23` con hook 138 → 262 (de 342; 253 tienen el strh cerca, todos cubiertos). `note_latched_slot` 160 → 267 de 426 `strh [r,#2]`.
 - Quedan ~159 `strh [r,#2]` sin nota: lectura-modificación de attr1 (`ldrh; ands 0xFE00; orrs X`) con X cortada por `& 0xFF`, o 16.16 `lsl #15; lsr #23`. No se cubren aún.
 - Proveedor: X anotada que coincide en 9 bits gana fuera del área stock (y re-ancla la pista); si está fuera de la vista ±64 se oculta. Área stock 0..239 sigue siempre con pliegue.
+
+### Base limpia + ensanchar chequeos del juego (plan aprobado)
+
+- PPU: se quitaron rastreador/proveedores (4db8d0d/646ddf8/f29e9cf). Sin `g_ws_obj_attr_x_provider` ni `g_ws_obj_y_provider`: todo OAM se dibuja con el pliegue de banda `wide_obj_x` (X) y el pliegue propio del PPU (Y). Los hooks de nota en generated/ quedan (inofensivos, solo diagnóstico).
+- Ensanchado: literal `0x011F0000` en 16 pools verificados (patrón `sx=objX−Layer1X; (sx+pad)<<16 cmp 0x011F0000; bhi → strb 0,[obj,#0x18]` = matar sprite menor/extendido). Se sube a `(0x11F+el+er)<<16` (sx máx. 429 < pliegue 455). Vía `widen_load_table`, sin tocar generated/.
+- Sin resolver: rutina de dibujo de Yoshi (no identificada). Y: los mismos chequeos usan `cmp #0xbf` / `cmn #0x10` (inmediatos, requieren editar generated/) — corta sprites en la franja de arriba (−32..−16). Siguiente paso: log en runtime de qué PC escribe la entrada fantasma de Yoshi (hook de `bus_write_u16` a soft-OAM) para ver su chequeo.

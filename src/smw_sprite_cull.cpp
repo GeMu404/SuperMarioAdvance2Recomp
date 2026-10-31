@@ -370,6 +370,25 @@ int widen_load_table(std::uint32_t addr, std::uint32_t width,
         return 1;
     }
 
+    // Minor/extended-sprite kill check (16 verified sites, Sub0802D7xx,
+    // Sub08039xxx-0803Exxx, Sub0804FE92): sx = objX - Layer1X;
+    // (sx+pad)<<16 > 0x011F0000 (bhi/bls) -> clear the slot. Stock keeps
+    // sx <= 271-pad+16; widen like 0x12F so objects in the wide view live,
+    // still inside the 9-bit fold band (max kept sx 429 < fold 455).
+    if (rom_literal && width == 4u && original == 0x011F0000u) {
+        static const std::uint32_t kPools[] = {
+            0x0802D860u, 0x080398D4u, 0x08039F6Cu, 0x0803A080u, 0x0803A14Cu,
+            0x0803A328u, 0x0803A424u, 0x0803A5CCu, 0x0803A76Cu, 0x0803AD7Cu,
+            0x0803E008u, 0x0803E58Cu, 0x0803EA78u, 0x0803EC0Cu, 0x0803EDA8u,
+            0x08050010u};
+        for (std::uint32_t pool : kPools) {
+            if (addr != pool) continue;
+            *out = (0x11Fu + g_ws_extra_left + g_ws_extra_right) << 16;
+            return 1;
+        }
+        return 0;
+    }
+
     // Soft-OAM / draw hide: (sx+32) > 0x12F → park Y at 0xC0.
     // Stock 0x12F=303 ⇒ sx>271. Wide must reach view_w+slack.
     if (rom_literal && width == 4u && original == 0x012F0000u) {
@@ -517,95 +536,9 @@ void note_slot_x(std::uint32_t slot, std::int32_t x) {
     g_frame_had_writes = true;
 }
 
-// Wrap recovery, both axes, per OAM index. OAM keeps 9 bits of X and 8 of
-// Y; an object the game still draws past an edge (stock hid it behind the
-// 240x160 glass) wraps back into the wide view's extra bands as a ghost.
-// Rules, safe in every game mode:
-//  - An entry whose fold lands in the stock 240x160 area draws at the fold,
-//    always, and anchors a track for its index.
-//  - Only an entry folding into the extra bands may move, and only when its
-//    index carries a track that was anchored in the stock area and has
-//    changed by small steps since: it gets the unwrapped position.
-//  - Anything else (no track, big jump, other shape) draws at the fold.
-// Tracks update only when the entry's attribute changes, so the per-scanline
-// calls need no frame signal.
-struct AxisTrack {
-    bool anchored;
-    std::uint16_t raw;
-    std::uint16_t key;
-    std::int32_t pos;
-};
-AxisTrack g_tx[128] = {};
-AxisTrack g_ty[128] = {};
-constexpr int kStep = 48;
-
-int ring(int d, int n) {
-    d &= n - 1;
-    return d >= n / 2 ? d - n : d;
-}
-
-int fold_y(int raw) {
-    return raw >= 256 - static_cast<int>(gba::g_ws_extra_top) ? raw - 256 : raw;
-}
-
-int track_axis(AxisTrack& t, int raw, std::uint16_t key, int fold, int ring_n,
-               int safe_lo, int safe_hi) {
-    if (fold >= safe_lo && fold < safe_hi) {
-        t = {true, static_cast<std::uint16_t>(raw), key, fold};
-        return fold;
-    }
-    if (t.anchored && t.key == key) {
-        if (t.raw == raw) return t.pos;
-        const int d = ring(raw - t.raw, ring_n);
-        if (d >= -kStep && d <= kStep) {
-            t.raw = static_cast<std::uint16_t>(raw);
-            t.pos += d;
-            return t.pos;
-        }
-    }
-    t.anchored = false;
-    return fold;
-}
-
-int wide_obj_attr_x(int idx, std::uint16_t attr0, std::uint16_t attr1,
-                    std::uint16_t attr2, int* out_x) {
-    if (!out_x || idx < 0 || idx >= 128) return 0;
-    const int raw = attr1 & 0x1FF;
-    int fold = raw;
-    wide_obj_x(raw, &fold);
-    const std::uint16_t key = static_cast<std::uint16_t>(
-        ((attr0 >> 14) << 6) | ((attr1 >> 14) << 4) | (attr2 >> 12));
-    // A full X noted by the draw hooks for this slot wins outside the stock
-    // area: it is the game's own value before the 9-bit cut. Past the view
-    // it simply lands off the picture (hidden). It also re-anchors the track.
-    if (g_slot_frame[idx] != 0u && (g_slot_x[idx] & 0x1FF) == raw &&
-        !(fold >= 0 && fold < 240)) {
-        g_tx[idx] = {true, static_cast<std::uint16_t>(raw), key, g_slot_x[idx]};
-        const int v = smw_view::view_w();
-        *out_x = (g_slot_x[idx] < -64 || g_slot_x[idx] >= v + 64) ? -1024
-                                                                 : g_slot_x[idx];
-        return 1;
-    }
-    *out_x = track_axis(g_tx[idx], raw, key, fold, 512, 0, 240);
-    return 1;
-}
-
-int wide_obj_y(int idx, std::uint16_t attr0, int* out_y) {
-    if (!out_y || idx < 0 || idx >= 128) return 0;
-    const int raw = attr0 & 0xFF;
-    // The game's hides go to the PPU's own rules.
-    if ((attr0 & 0x0300u) == 0x0200u || raw == 0xC0) {
-        g_ty[idx].anchored = false;
-        g_tx[idx].anchored = false;
-        return 0;
-    }
-    const int fold = fold_y(raw);
-    const std::uint16_t key = static_cast<std::uint16_t>(attr0 >> 14);
-    const int y = track_axis(g_ty[idx], raw, key, fold, 256, 0, 160);
-    if (y == fold) return 0;  // PPU fold path, unchanged behaviour
-    *out_y = y;
-    return 1;
-}
+// The PPU draws every OAM entry at the plain band fold (wide_obj_x). The
+// notes above are kept for diagnostics only; correctness comes from the
+// game's own (widened) on-screen checks not writing far objects to OAM.
 
 }  // namespace
 
@@ -648,8 +581,6 @@ namespace smw {
 
 void install_sprite_cull_hooks() {
     gba::g_ws_obj_x_provider = wide_obj_x;
-    gba::g_ws_obj_attr_x_provider = wide_obj_attr_x;
-    gba::g_ws_obj_y_provider = wide_obj_y;
     g_previous_bus_read = g_runtime_bus_read_override;
     g_runtime_bus_read_override = playfield_bus_read;
 }
