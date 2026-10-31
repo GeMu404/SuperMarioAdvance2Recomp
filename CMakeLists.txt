@@ -34,6 +34,8 @@ file(GLOB GAME_GENERATED_SOURCES CONFIGURE_DEPENDS
 add_executable(SuperMarioWorldRecomp
     src/main.cpp
     src/smw_extended_view.cpp
+    src/smw_host_layers.cpp
+    src/smw_sprite_cull.cpp
     src/mods/smw_adaptive_view_plugin.cpp
     ${GAME_GENERATED_SOURCES})
 
