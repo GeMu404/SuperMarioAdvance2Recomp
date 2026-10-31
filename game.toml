@@ -1750,3 +1750,30 @@ addr = 0x0809E578
 mode = "thumb"
 resume = true
 note = "Observed during the clean-ROM opening/attract path."
+
+# Reviewed from recomp_master_misses_AA2E.toml.frag (interpreter bridge misses).
+[[extra_func]]
+addr = 0x080307FA
+mode = "thumb"
+note = "Self-heal miss-log; bridged x4830"
+
+[[extra_func]]
+addr = 0x0803095C
+mode = "thumb"
+note = "Self-heal miss-log; bridged x2"
+
+[[extra_func]]
+addr = 0x08030BC8
+mode = "thumb"
+note = "Self-heal miss-log; bridged x5"
+
+[[extra_func]]
+addr = 0x08030DC8
+mode = "thumb"
+note = "Self-heal miss-log; bridged x15"
+
+[[extra_func]]
+addr = 0x08031794
+mode = "thumb"
+note = "Self-heal miss-log; bridged x53"
+
