@@ -218,6 +218,17 @@ extern "C" std::uint32_t smw_ws_cam_span_max(std::uint32_t base) {
     return base + 16u - (g_ws_extra_left + g_ws_extra_right);
 }
 
+// Sub08006340 tail. Stock clamps Layer1 Y to the level's camera max
+// (0x03002BA8) for a 160-row screen. The wide view shows extra_bottom rows
+// below Layer1+160, so the same max minus those rows keeps the view's bottom
+// on the world's bottom (same idea as cam_span_max in X).
+extern "C" std::uint32_t smw_ws_cam_y_max(std::uint32_t max_y) {
+    const std::int32_t v = static_cast<std::int16_t>(max_y);
+    const std::int32_t eb = static_cast<std::int32_t>(gba::g_ws_extra_bottom);
+    if (eb <= 0 || v <= 0) return max_y;
+    return static_cast<std::uint32_t>(std::max(0, v - eb));
+}
+
 // Sub0806B7C8. Stock right barrier is Layer1 + 0xE8 (or + 0xE0 for a
 // few block types). 0xE8 is 8px in from the right of the 240 screen
 // (240-8). Layer1 is the left of the wide view, so the same inset from

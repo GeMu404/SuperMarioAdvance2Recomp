@@ -21,6 +21,7 @@ extern "C" std::uint32_t smw_ws_deadzone_face_right(void);
 extern "C" std::uint32_t smw_ws_deadzone_face_left(void);
 extern "C" std::uint32_t smw_ws_screen_x(std::uint32_t player, std::uint32_t cam);
 extern "C" std::uint32_t smw_ws_cam_span_max(std::uint32_t base);
+extern "C" std::uint32_t smw_ws_cam_y_max(std::uint32_t max_y);
 extern "C" std::uint32_t smw_ws_screen_barrier(std::uint32_t layer, std::uint32_t inset);
 extern "C" std::uint32_t smw_ws_offscreen_x_test(std::uint32_t addr);
 extern "C" std::uint32_t smw_ws_offscreen_y_test(std::uint32_t screen_y);
