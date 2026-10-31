@@ -34,7 +34,6 @@ extern "C" std::uint32_t smw_ws_stream_lead(void) {
 extern "C" void smw_ws_mode0_bg_refresh(void);
 
 extern "C" std::uint32_t smw_ws_stream_ahead(void) {
-    smw_ws_mode0_bg_refresh();
     return 31u - smw_ws_stream_lead();
 }
 
@@ -55,9 +54,17 @@ extern "C" std::uint32_t smw_ws_stream_lead_y(void) {
 
 // Sub0800EB44. Bytes written into the mode-0 background at 0x02001800.
 static unsigned g_mode0_bg_bytes;
+// Set only when this level's per-frame layer-2 loader is the no-op
+// (Return0800FD98, e.g. Donut Plains 2): the game never fills the second
+// screen there. Every other level streams its own background, so the
+// fill below must not touch it.
+static bool g_mode0_static_bg = false;
+static unsigned g_mode0_last_layer2 = ~0u;
 
 extern "C" void smw_ws_note_mode0_bg_bytes(std::uint32_t n) {
     g_mode0_bg_bytes = n;
+    g_mode0_static_bg = false;
+    g_mode0_last_layer2 = ~0u;
 }
 
 // 0801342C. The level's Map16 pointers at +0xE8 are the tileset the DMA
@@ -83,7 +90,8 @@ static int mode0_map16_hw(unsigned id, unsigned sub, std::uint16_t* out) {
 // The 512px image is wider than the half the scan is showing as sky.
 extern "C" int smw_ws_mode0_bg_sample(unsigned tile_x, unsigned tile_y,
                                      std::uint16_t* out) {
-    if (g_mode0_bg_bytes < 0x1B0u || out == nullptr) return 0;
+    if (!g_mode0_static_bg || g_mode0_bg_bytes < 0x1B0u || out == nullptr)
+        return 0;
     const std::uint32_t level = bus_read_u32(smw_view::kLevelPtr);
     if (level < 0x02000000u || level >= 0x04000000u) return 0;
     const unsigned mode = bus_read_u16(level + 4u);
@@ -144,6 +152,7 @@ static void mode0_upload_column(unsigned col) {
 // Called when the per-frame layer-2 loader is the no-op (Return0800FD98).
 extern "C" void smw_ws_mode0_bg_refresh(void) {
     if (g_mode0_bg_bytes == 0u) return;
+    g_mode0_static_bg = true;
     const std::uint32_t level = bus_read_u32(smw_view::kLevelPtr);
     if (level < 0x02000000u || level >= 0x04000000u) return;
     const unsigned mode = bus_read_u16(level + 4u);
@@ -151,9 +160,8 @@ extern "C" void smw_ws_mode0_bg_refresh(void) {
         return;
     if (bus_read_u16(level + 0x1Eu) & 2u) return;
     const unsigned layer2 = bus_read_u16(0x03002C0Cu);
-    static unsigned last = ~0u;
-    if (last == layer2) return;
-    last = layer2;
+    if (g_mode0_last_layer2 == layer2) return;
+    g_mode0_last_layer2 = layer2;
     const unsigned view = static_cast<unsigned>(smw_view::view_w());
     const unsigned left = layer2 >> 4;
     const unsigned right = (layer2 + view - 1u) >> 4;
