@@ -35,6 +35,7 @@ add_executable(SuperMarioWorldRecomp
     src/main.cpp
     src/smw_extended_view.cpp
     src/smw_sprite_cull.cpp
+    src/smw_oam_log.cpp
     src/mods/smw_adaptive_view_plugin.cpp
     ${GAME_GENERATED_SOURCES})
 

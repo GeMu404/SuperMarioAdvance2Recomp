@@ -126,3 +126,9 @@ A vigilar: objeto que *aparece* ya fuera del rango sin ambigüedad (X ∉ [−57
 - PPU: se quitaron rastreador/proveedores (4db8d0d/646ddf8/f29e9cf). Sin `g_ws_obj_attr_x_provider` ni `g_ws_obj_y_provider`: todo OAM se dibuja con el pliegue de banda `wide_obj_x` (X) y el pliegue propio del PPU (Y). Los hooks de nota en generated/ quedan (inofensivos, solo diagnóstico).
 - Ensanchado: literal `0x011F0000` en 16 pools verificados (patrón `sx=objX−Layer1X; (sx+pad)<<16 cmp 0x011F0000; bhi → strb 0,[obj,#0x18]` = matar sprite menor/extendido). Se sube a `(0x11F+el+er)<<16` (sx máx. 429 < pliegue 455). Vía `widen_load_table`, sin tocar generated/.
 - Sin resolver: rutina de dibujo de Yoshi (no identificada). Y: los mismos chequeos usan `cmp #0xbf` / `cmn #0x10` (inmediatos, requieren editar generated/) — corta sprites en la franja de arriba (−32..−16). Siguiente paso: log en runtime de qué PC escribe la entrada fantasma de Yoshi (hook de `bus_write_u16` a soft-OAM) para ver su chequeo.
+
+### Diagnóstico: quién escribe cada slot del soft-OAM
+
+- `SMA2_OAM_LOG=1 build/run-sma2.sh` (apagado por defecto). F10 vuelca el cuadro recién armado a `logs/oam-<vblank>.txt` (raíz del repo, ignorado por git). También `SMA2_OAM_LOG_FRAME=<vblank>`.
+- Columnas: slot, PC que escribió attr0/attr1/attr2, attrs, Y, X 9 bits, tile, forma/tamaño, X del pliegue, X completa latcheada (si la ruta tiene hook; `-` si no).
+- `src/smw_oam_log.cpp` + observador de escrituras en gbarecomp (`g_runtime_write_observer` en `runtime_trace_event`, F10 en `host_window`).

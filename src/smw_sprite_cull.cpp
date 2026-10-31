@@ -579,7 +579,12 @@ void smw_ws_note_obj_y_tile(std::uint32_t, std::int32_t, std::uint32_t) {}
 
 namespace smw {
 
+int oam_log_latched_x() { return g_latched_x; }
+int oam_log_fold_x(int raw) { int x = raw; wide_obj_x(raw, &x); return x; }
+void install_oam_log();
+
 void install_sprite_cull_hooks() {
+    install_oam_log();
     gba::g_ws_obj_x_provider = wide_obj_x;
     g_previous_bus_read = g_runtime_bus_read_override;
     g_runtime_bus_read_override = playfield_bus_read;

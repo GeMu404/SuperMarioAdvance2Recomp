@@ -34,3 +34,4 @@ recomp_seed_proposals.toml
 .vs/
 .vscode/
 __pycache__/
+logs/
