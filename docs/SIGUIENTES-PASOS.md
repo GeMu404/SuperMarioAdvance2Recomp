@@ -70,3 +70,22 @@ lógica por objeto.
 ## Reglas
 - No subir ROM, BIOS, saves ni builds (ya están en `.gitignore`).
 - Commits chicos por paso; cambios del framework en `gbarecomp`, los del juego aquí.
+
+## Hecho (31-oct, tarde)
+
+- **Cámara Y:** el máximo Y del juego (`0x03002BA8`, rutina `0x08006340`) se lee con `smw_ws_cam_y_max()` = max − `extra_bottom`. Así el borde inferior de la vista ancha queda en el fondo del mundo, igual que `smw_ws_cam_span_max` en X. Los hooks están en `generated/recompiled_040.cpp`, en `0x0800634C` y `0x08006356`. Ojo: `generated/` no se versiona.
+- **Fondo mode-0 (Donut Plains 2):** el relleno de la segunda pantalla del fondo solo corre si, al decodificar las 16 columnas que cargó el juego, el resultado coincide con la VRAM. Así se autovalida por nivel y no hay números de nivel fijos. Antes pintaba tiles del primer plano sobre todos los fondos normales.
+- **X de sprites:** Layer1 es el borde izquierdo de la vista (ox = 0), así que la vista es X ∈ [0, view_w). Ahora `wide_obj_x` (el doblez de 9 bits), `smw_ws_sprite_offscreen_x/_u8`, `smw_ws_wide_edge` y el pad del soft-OAM usan la misma franja, `obj_x_band() = (512 − view_w)/2`.
+
+## Pendiente: sprites fantasma (arreglo de raíz, NO caso por caso)
+
+Síntomas: sprites lejanos que reaparecen al otro borde (X de 9 bits que da la vuelta) y sprites que quedan pegados donde estaban (por ejemplo, Yoshi que salió de un bloque). Ya pasaba con el parche original de GeMu.
+
+Causa: la vista mide 398 px y al anillo de 512 solo le sobran 114 px, así que un X de 9 bits es ambiguo. Cualquier ruta de dibujo del juego que no recorte justo produce un fantasma.
+
+Plan (un solo punto, sin listas por objeto):
+1. Tabla `real_x[128]` y `written_frame[128]` por slot de OAM.
+2. Donde el juego escribe attr1 (X) en el soft-OAM (`smw_view::kSoftOam`), anotar la X completa con signo de ese cálculo, antes del `& 0x1FF`. Primero hay que identificar esas escrituras: el generated ya tiene hooks `smw_ws_note_obj_x` (6 sitios) y `smw_ws_note_latched_slot` (320), hoy vacíos. Partir revisando si cubren todas las rutas.
+3. En la PPU, `g_ws_obj_x_provider` / `g_ws_obj_attr_x_provider` devuelven `real_x[idx]` solo si el slot se escribió en este cuadro. Si no se escribió, no se dibuja (eso mata los pegados).
+4. Mismo esquema para Y (8 bits) si aparecen fantasmas verticales.
+5. Una vez hecho, se pueden simplificar los recortes de arriba.

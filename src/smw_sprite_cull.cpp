@@ -126,24 +126,25 @@ std::uint32_t smw_ws_keep_screen_y(std::uint32_t oam, std::int32_t y) {
     return static_cast<std::uint32_t>(sy) & 0xFFu;
 }
 
-// screen_x is sprite − Layer1. Layer1 is the left of the view, so the
-// visible range is the view itself, plus the stock slack outside it.
+// screen_x is sprite − Layer1. Layer1 is the left of the view (ox = 0),
+// so the picture is [0, view_w). OAM X is 9 bits: the 512 ring only fits
+// the view plus (512 - view_w) more. Keeping a sprite outside the half of
+// that band on each side lets its X wrap onto the other edge (ghosts), so
+// both tests and the PPU fold (wide_obj_x) use that same half band.
+static int obj_x_band(void) {
+    const int unused = 512 - smw_view::view_w();
+    return unused > 0 ? unused / 2 : 0;
+}
+
 extern "C" int smw_ws_sprite_offscreen_x(std::int32_t screen_x) {
-    const int xmin = -16 - static_cast<int>(g_ws_extra_left) - 48 -
-                     static_cast<int>(kViewportSlack);
-    const int xmax =
-        239 + static_cast<int>(g_ws_extra_left + g_ws_extra_right) + 48 +
-        static_cast<int>(kViewportSlack);
+    const int band = obj_x_band();
+    const int xmin = -band;
+    const int xmax = smw_view::view_w() + band - 1;
     return (screen_x < xmin || screen_x > xmax) ? 1 : 0;
 }
 
 extern "C" int smw_ws_sprite_offscreen_x_u8(std::int32_t screen_x) {
-    const int xmin = -static_cast<int>(g_ws_extra_left) - 48 -
-                     static_cast<int>(kViewportSlack);
-    const int xmax =
-        255 + static_cast<int>(g_ws_extra_left + g_ws_extra_right) + 48 +
-        static_cast<int>(kViewportSlack);
-    return (screen_x < xmin || screen_x > xmax) ? 1 : 0;
+    return smw_ws_sprite_offscreen_x(screen_x);
 }
 
 // Right edge used by the per-sprite hide (`cmp` against 0x012F / 0x013F).
@@ -167,9 +168,15 @@ extern "C" std::uint32_t smw_ws_rex_y_lo(void) {
 // Draw skip in 16.16. Stock edges are 0x011F0000 (pixel 287) and
 // 0x01300000 (pixel 304): 47 and 64 px past a 240-wide view. The
 // compared value already includes whatever bias the drawer added.
+static int obj_x_band(void);
+
 std::uint32_t smw_ws_wide_edge(std::uint32_t rom_limit) {
-    const std::uint32_t px =
+    std::uint32_t px =
         (rom_limit >> 16) + g_ws_extra_left + g_ws_extra_right + kViewportSlack;
+    // Past view_w + band the 9-bit X lands on the left edge (wide_obj_x).
+    const std::uint32_t fold =
+        static_cast<std::uint32_t>(smw_view::view_w() + obj_x_band() - 1);
+    if (px > fold) px = fold;
     return px << 16;
 }
 
@@ -306,8 +313,10 @@ void smw_ws_log_y_real(std::uint32_t, int, std::uint32_t) {}
 void smw_ws_log_y_decide(std::uint32_t) {}
 
 // Soft-OAM hide pads screen_x by this before cmp 0x12F (stock 32<<16).
+// screen_x starts at the view's left edge, so the pad is only the stock
+// one plus slack; the limit already carries the extra width.
 extern "C" std::uint32_t smw_ws_sprite_vis_x_pad_shl16(void) {
-    return (32u + g_ws_extra_left + kViewportSlack) << 16;
+    return (32u + kViewportSlack) << 16;
 }
 
 // Sub0802F678 and the two copies. The stock test is (screenY+pad)&0xFF00,
@@ -475,15 +484,14 @@ int playfield_bus_read(std::uint32_t pc, std::uint32_t addr, std::uint32_t width
     return 0;
 }
 
-// Signed 9-bit OAM X re-centred on the wide view: the unused band between
-// the right margin and the left margin decides the fold point, so a guest X
-// in [-(extra_left+slack), 240+extra_right+slack] is unambiguous.
+// Signed 9-bit OAM X on the wide view. Layer1 is the view's left edge
+// (ox = 0), so the picture is guest X [0, view_w). The unused part of the
+// 512 ring is split between the two sides, which puts the fold there.
 int wide_obj_x(int raw_x, int* out_x) {
     if (!out_x) return 0;
-    const int el = static_cast<int>(g_ws_extra_left);
-    const int er = static_cast<int>(g_ws_extra_right);
-    const int unused = 512 - smw_view::kNativeW - el - er;
-    const int fold = smw_view::kNativeW + er + (unused > 0 ? unused / 2 : 0);
+    const int view = smw_view::view_w();
+    const int unused = 512 - view;
+    const int fold = view + (unused > 0 ? unused / 2 : 0);
     *out_x = raw_x >= fold ? raw_x - 512 : raw_x;
     return 1;
 }
