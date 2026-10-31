@@ -27,16 +27,11 @@ int main(int argc, char** argv) {
     opts.mod_game_id = "super-mario-world-us";
     opts.mod_owns_adaptive_view = true;
 
-    opts.max_view_width = 430;
-    opts.max_resize_view_width = 430;
     opts.resize_driven_view = true;
+    // View size comes from game.toml [video] view_height (+aspect); the
+    // runtime derives width and margins (gbarecomp view_config.h).
     opts.launcher_expose_widescreen = true;
     opts.launcher_expose_adaptive_view = true;
-    opts.widescreen_view_width = 430;
-    // 16px past the previous 398×224 picture, on every side.
-    opts.tall_bottom_anchor = false;
-    opts.view_extra_top = 80;
-    opts.view_extra_bottom = 16;
     opts.extended_view_init = smw::install_extended_view;
 
     opts.launcher_region = "USA";

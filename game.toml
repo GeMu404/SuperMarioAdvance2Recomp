@@ -40,7 +40,10 @@ window_title = "SuperMarioWorldRecomp"
 
 [video]
 screen = "frontlit"
-view_width = 430
+# Widescreen (off by default, toggled in the launcher) uses the SNES height;
+# width is derived as round(view_height * 16/9) = 398, margins 32/32.
+view_height = 224
+aspect = "16:9"
 # Adaptive widescreen is a disabled-by-default feature in the Mods catalog.
 # Its state is persisted in mods/state.toml rather than this display section.
 
