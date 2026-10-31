@@ -9,7 +9,6 @@
 #include "gba_ppu.h"
 #include "runtime_arm.h"
 #include "runtime_bus_bridge.h"
-#include "smw_host_layers.h"
 #include "smw_sprite_cull.h"
 
 extern "C" unsigned g_ws_extra_left;
@@ -202,55 +201,6 @@ void write_s16(std::uint32_t addr, std::int32_t v) {
     bus_write_u16(addr, static_cast<std::uint16_t>(static_cast<std::int16_t>(v)));
 }
 
-// Vertical follow (floor framing, NOT center) + hard clamp.
-//
-// Desired: 0 ≤ L1_Y ≤ room_h − view_h, Mario untouched.
-// Yoshi-1 header room_h=256 is too small vs stock L1_Y≈248 / player≈352 —
-// a naive clamp to (256−224)=32 kills Mario. Expand the effective room to
-// at least cover the live play span, then clamp. See dict A9.
-void apply_guest_cam_y_follow(int room_h, int view_h) {
-    if (view_h <= 0) return;
-
-    constexpr int kSyLow = 120;    // Mario too low → cam down
-    constexpr int kSyHigh = 40;    // Mario too high → cam up
-    constexpr int kSyFloor = 104;  // settle (floor band)
-    constexpr int kMaxSy = 152;    // keep Mario on guest 160
-
-    const std::int32_t l1y_before = read_s16(kLayer1Y);
-    const std::int32_t player_y = read_s16(kPlayerY);
-    std::int32_t l1y = l1y_before;
-    const int sy = static_cast<int>(player_y - l1y);
-
-    if (sy > kSyLow) {
-        l1y = player_y - kSyFloor;
-    } else if (sy < kSyHigh) {
-        l1y = player_y - kSyHigh;
-    }
-
-    // Effective room height: header may under-report (YI1). Never smaller
-    // than what stock cam + Mario already use.
-    int eff_room_h = room_h;
-    const int live_span = std::max(static_cast<int>(l1y_before) + 160,
-                                   static_cast<int>(player_y) + 32);
-    if (live_span > eff_room_h) eff_room_h = live_span;
-
-    int max_l1y = eff_room_h - view_h;
-    if (max_l1y < 0) max_l1y = 0;
-    // Safety: never force Mario below the guest screen (death).
-    const int max_l1y_alive = static_cast<int>(player_y) - kSyFloor;
-    if (max_l1y_alive > max_l1y) max_l1y = max_l1y_alive;
-    // And never allow L1 so high Mario falls off the bottom of 160.
-    const int max_l1y_onscreen = static_cast<int>(player_y) - (160 - kMaxSy);
-    if (max_l1y > max_l1y_onscreen) max_l1y = std::max(0, max_l1y_onscreen);
-
-    if (l1y > max_l1y) l1y = max_l1y;
-    if (l1y < 0) l1y = 0;
-
-    if (l1y != l1y_before) {
-        write_s16(kLayer1Y, l1y);
-        bus_write_u32(kCamY, static_cast<std::uint32_t>(l1y));
-    }
-}
 
 // Room size from level header (1175/1176). Returns false if not in a sublevel.
 bool read_room_size(int* room_w, int* room_h, std::uint16_t* cam_min,
@@ -317,202 +267,6 @@ void apply_wide_guest_cam(bool before_follow) {
 bool title_layout(const std::uint8_t* io);
 
 
-void dump_soft_oam_once() {
-    static bool done = false;
-    if (done) return;
-    if (g_runtime_vblank_starts < 400) return;
-    const char* e = std::getenv("GBARECOMP_SMW_SOFT_OAM");
-    if (!e || !*e || *e == '0') return;
-    done = true;
-    constexpr std::uint32_t kSoft = 0x03002C28u;
-    std::fprintf(stderr, "[smw:soft-oam] frame=%llu as-oam8\n",
-                 g_runtime_vblank_starts);
-    int n = 0;
-    for (int i = 0; i < 128 && n < 50; ++i) {
-        std::uint32_t base = kSoft + static_cast<std::uint32_t>(i) * 8u;
-        std::uint16_t a0 = bus_read_u16(base + 0);
-        std::uint16_t a1 = bus_read_u16(base + 2);
-        std::uint16_t a2 = bus_read_u16(base + 4);
-        bool aff = (a0 & 0x0100) != 0;
-        if (!aff && (a0 & 0x0200)) continue;
-        int sy = a0 & 0xFF;
-        if (sy >= 160) sy -= 256;
-        int sx = a1 & 0x1FF;
-        if (sx & 0x100) sx -= 0x200;
-        if (sy < -16 || sy > 48) continue;
-        std::fprintf(stderr,
-            "  soft[%03d] xy=%d,%d tile=%u a0=%04X a1=%04X a2=%04X\n",
-            i, sx, sy, a2 & 0x3FF, a0, a1, a2);
-        ++n;
-    }
-    std::fprintf(stderr, "[smw:soft-oam] in-band=%d\n", n);
-}
-
-
-
-void dump_all_oam_once() {
-    static bool done = false;
-    if (done) return;
-    if (g_runtime_vblank_starts < 400) return;
-    const char* e = std::getenv("GBARECOMP_SMW_ALL_OAM");
-    if (!e || !*e || *e == '0') return;
-    done = true;
-    std::fprintf(stderr, "[smw:all-oam] frame=%llu FULL\n", g_runtime_vblank_starts);
-    int n = 0;
-    for (int i = 0; i < 128; ++i) {
-        std::uint32_t base = 0x07000000u + static_cast<std::uint32_t>(i) * 8u;
-        std::uint16_t a0 = bus_read_u16(base + 0);
-        std::uint16_t a1 = bus_read_u16(base + 2);
-        std::uint16_t a2 = bus_read_u16(base + 4);
-        bool aff = (a0 & 0x0100) != 0;
-        if (!aff && (a0 & 0x0200)) continue;
-        int sy = a0 & 0xFF;
-        if (sy >= 160) sy -= 256;
-        int sx = a1 & 0x1FF;
-        if (sx & 0x100) sx -= 0x200;
-        int shape = (a0 >> 14) & 3;
-        int size = (a1 >> 14) & 3;
-        static const int W[3][4]={{8,16,32,64},{16,32,32,64},{8,8,16,32}};
-        static const int H[3][4]={{8,16,32,64},{8,8,16,32},{16,32,32,64}};
-        int w = (shape < 3) ? W[shape][size] : 8;
-        int h = (shape < 3) ? H[shape][size] : 8;
-        // skip obvious empties (tile0 at -96)
-        if (sy == -96 && (a2 & 0x3FF) == 0 && sx == 0) continue;
-        std::fprintf(stderr,
-            "  oam[%03d] xy=%d,%d %dx%d tile=%u a0=%04X\n",
-            i, sx, sy, w, h, a2 & 0x3FF, a0);
-        if (++n >= 60) break;
-    }
-    std::fprintf(stderr, "[smw:all-oam] shown=%d\n", n);
-}
-
-
-
-
-void dump_io_hud_once() {
-    static bool done = false;
-    if (done) return;
-    if (g_runtime_vblank_starts < 400) return;
-    const char* e = std::getenv("GBARECOMP_SMW_IO_HUD");
-    if (!e || !*e || *e == '0') return;
-    done = true;
-    auto r16 = [](std::uint32_t a) { return bus_read_u16(a); };
-    std::fprintf(stderr,
-        "[smw:io] DISPCNT=%04X BG0CNT=%04X BG1CNT=%04X BG2CNT=%04X BG3CNT=%04X\n"
-        "  BG0HOFS=%d VOFS=%d BG1HOFS=%d VOFS=%d\n"
-        "  WIN0H=%04X WIN0V=%04X WIN1H=%04X WIN1V=%04X WININ=%04X WINOUT=%04X\n"
-        "  BLDCNT=%04X BLDALPHA=%04X BLDY=%04X\n",
-        r16(0x04000000), r16(0x04000008), r16(0x0400000A), r16(0x0400000C), r16(0x0400000E),
-        r16(0x04000010), r16(0x04000012), r16(0x04000014), r16(0x04000016),
-        r16(0x04000040), r16(0x04000044), r16(0x04000042), r16(0x04000046),
-        r16(0x04000048), r16(0x0400004A),
-        r16(0x04000050), r16(0x04000052), r16(0x04000054));
-}
-
-
-
-void dump_status_tiles_once() {
-    static bool done = false;
-    if (done) return;
-    if (g_runtime_vblank_starts < 400) return;
-    const char* e = std::getenv("GBARECOMP_SMW_STATUS_TILES");
-    if (!e || !*e || *e == '0') return;
-    done = true;
-    gba::GbaBus* bus = gbarecomp::active_bus();
-    if (!bus) return;
-    const std::uint8_t* io = bus->io().raw();
-    const std::uint8_t* vram = bus->vram_ptr();
-    auto r16io = [&](unsigned off) {
-        return static_cast<std::uint16_t>(io[off] | (std::uint16_t(io[off+1]) << 8));
-    };
-    const std::uint16_t bg0cnt = r16io(0x08);
-    const int hofs = r16io(0x10);
-    const int vofs = r16io(0x12);
-    const int screen_base = ((bg0cnt >> 8) & 0x1F) * 0x800;
-    const int size = (bg0cnt >> 14) & 3;
-    // size1 = 512x256: 64x32 tiles, 2 screens horizontal
-    std::fprintf(stderr, "[smw:tiles] BG0CNT=%04X screen=%04X hofs=%d vofs=%d size=%d\n",
-                 bg0cnt, screen_base, hofs, vofs, size);
-    // Print unique tile ids on screen rows 0..31
-    for (int sy = 0; sy < 32; sy += 8) {
-        std::fprintf(stderr, "  row sy=%d:", sy);
-        for (int sx = 0; sx < 240; sx += 8) {
-            int tx = ((hofs + sx) >> 3) & 63; // 512-wide
-            int ty = ((vofs + sy) >> 3) & 31;
-            int map_x = tx & 31;
-            int screen = (tx >= 32) ? 0x800 : 0; // second screen block
-            int off = screen_base + screen + (ty * 32 + map_x) * 2;
-            std::uint16_t entry = static_cast<std::uint16_t>(
-                vram[off] | (std::uint16_t(vram[off+1]) << 8));
-            std::fprintf(stderr, " %03X", entry & 0x3FF);
-        }
-        std::fprintf(stderr, "\n");
-    }
-}
-
-
-void dump_sprite_inventory_once() {
-    static bool done = false;
-    if (done) return;
-    // After YI2 entry in boot replay (~647); don't wait for bias.
-    if (g_runtime_vblank_starts < 900) return;
-    done = true;
-    const int bias = gba::g_ws_scroll_bias_x;
-    const int el = static_cast<int>(g_ws_extra_left);
-    const int view_w = 240 + static_cast<int>(g_ws_extra_left + g_ws_extra_right);
-    std::fprintf(stderr,
-        "[smw:spr-inv] frame=%llu bias=%d view_w=%d offscreen_xmax=%d\n",
-        g_runtime_vblank_starts, bias, view_w,
-        239 + static_cast<int>(g_ws_extra_left + g_ws_extra_right));
-    int n = 0, right_of_240 = 0, right_of_318 = 0;
-    for (int i = 0; i < 128; ++i) {
-        std::uint32_t base = 0x07000000u + static_cast<std::uint32_t>(i) * 8u;
-        std::uint16_t a0 = bus_read_u16(base + 0);
-        std::uint16_t a1 = bus_read_u16(base + 2);
-        std::uint16_t a2 = bus_read_u16(base + 4);
-        bool aff = (a0 & 0x0100) != 0;
-        if (!aff && (a0 & 0x0200)) continue;
-        int sy = a0 & 0xFF;
-        if (sy >= 160) sy -= 256;
-        int sx = a1 & 0x1FF;
-        if (sx & 0x100) sx -= 0x200;
-        if (sy == -96 && (a2 & 0x3FF) == 0 && sx == 0) continue;
-        const int fb = sx - bias + el;
-        if (sx > 240) ++right_of_240;
-        if (sx > 318) ++right_of_318;
-        if (n < 40) {
-            std::fprintf(stderr,
-                "  oam[%03d] guest=%d,%d fb_x=%d tile=%u\n",
-                i, sx, sy, fb, a2 & 0x3FF);
-        }
-        ++n;
-    }
-    std::fprintf(stderr,
-        "[smw:spr-inv] live=%d guest_x>240=%d guest_x>318=%d\n",
-        n, right_of_240, right_of_318);
-
-    // Sprite slots at [03007A48]+0x06CC, stride 0x64. Status at +0x1C.
-    const std::uint32_t pool = bus_read_u32(0x03007A48u);
-    if (pool >= 0x02000000u && pool < 0x04000000u) {
-        int alive = 0;
-        for (int i = 0; i < 24; ++i) {
-            const std::uint32_t s =
-                pool + 0x06CCu + static_cast<std::uint32_t>(i) * 0x64u;
-            const unsigned st = read_u8(s + 0x1Cu);
-            if (st == 0) continue;
-            const int wx = static_cast<std::int16_t>(bus_read_u16(s + 0x10u));
-            const int wy = static_cast<std::int16_t>(bus_read_u16(s + 0x12u));
-            const unsigned id = read_u8(s + 0x1Au);
-            const unsigned f2e = read_u8(s + 0x2Eu);
-            const unsigned f31 = read_u8(s + 0x31u);
-            std::fprintf(stderr,
-                "  slot[%02d] st=%u id=%02X world=%d,%d off2E=%u right31=%u\n",
-                i, st, id, wx, wy, f2e, f31);
-            ++alive;
-        }
-        std::fprintf(stderr, "[smw:spr-inv] slots_alive=%d\n", alive);
-    }
-}
 
 void publish_camera() {
     {
@@ -526,11 +280,6 @@ void publish_camera() {
             }
         }
     }
-    dump_soft_oam_once();
-    dump_all_oam_once();
-    dump_io_hud_once();
-    dump_status_tiles_once();
-    dump_sprite_inventory_once();
     gba::GbaBus* bus = gbarecomp::active_bus();
     if (!bus) return;
 
@@ -565,11 +314,7 @@ void publish_camera() {
     (void)cam_x;
     (void)cam_y;
 
-    // Guest clamp max for native 240: (screens-1)*256+16 ≡ room_w-240.
-    // Wide: origin so Layer1 stays in [bias_min, room_w - view_w].
-    const int native_max_x =
-        (room_w > 240) ? (room_w - 240) : 0;
-    (void)native_max_x;
+    // Origin keeps the whole view inside [0, room_w - view_w].
     (void)cam_min_bias;
 
     int origin_x = layer1_x - extra_l;
@@ -793,10 +538,6 @@ void install_extended_view(std::uint32_t, std::uint32_t) {
     gba::g_ws_pillarbox_right = 0;
 
     install_sprite_cull_hooks();
-    // Always capture the Sub0808C4A4 display-list (for HUD classification).
-    // Stock OAM still draws the world unless GBARECOMP_SMW_HOST_LAYERS=1
-    // (that flag sets g_ws_host_obj_compose and skips OAM — kills Mario).
-    install_host_layers();
 
     g_previous_fn_entry = g_runtime_fn_entry_hook;
     g_runtime_fn_entry_hook = on_fn_entry;
